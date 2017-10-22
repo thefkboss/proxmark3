@@ -30,7 +30,6 @@
 #include <lualib.h>
 #include <lauxlib.h>
 
-
 static int CmdHelp(const char *Cmd);
 static int CmdList(const char *Cmd);
 static int CmdRun(const char *Cmd);
@@ -77,13 +76,16 @@ int CmdList(const char *Cmd)
 {
     DIR *dp;
     struct dirent *ep;
-    dp = opendir ("./scripts/");
+	char script_directory_path[strlen(get_my_executable_directory()) + strlen(LUA_SCRIPTS_DIRECTORY) + 1];
+	strcpy(script_directory_path, get_my_executable_directory());
+	strcat(script_directory_path, LUA_SCRIPTS_DIRECTORY);
+    dp = opendir(script_directory_path);
 
     if (dp != NULL)
     {
         while ((ep = readdir (dp)) != NULL)
         {
-            if(ep->d_name != NULL && str_ends_with(ep->d_name, ".lua"))
+            if(str_ends_with(ep->d_name, ".lua"))
                 PrintAndLog("%-16s %s", ep->d_name, "A script file");
         }
         (void) closedir (dp);
@@ -149,17 +151,19 @@ int CmdRun(const char *Cmd)
         suffix = ".lua";
     }
 
-    char buf[256];
-    snprintf(buf, sizeof buf, "./scripts/%s%s", script_name, suffix);
+	char script_path[strlen(get_my_executable_directory()) + strlen(LUA_SCRIPTS_DIRECTORY) + strlen(script_name) + strlen(suffix) + 1];
+	strcpy(script_path, get_my_executable_directory());
+	strcat(script_path, LUA_SCRIPTS_DIRECTORY);
+	strcat(script_path, script_name);
+	strcat(script_path, suffix);
 
-    printf("--- Executing: %s, args'%s'\n",buf,arguments);
-
+    printf("--- Executing: %s%s, args '%s'\n", script_name, suffix, arguments);
 
 
 
     // run the Lua script
 
-    int error = luaL_loadfile(lua_state, buf);
+    int error = luaL_loadfile(lua_state, script_path);
     if(!error)
     {
 

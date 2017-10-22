@@ -319,18 +319,7 @@ static int GetIso15693AnswerFromTag(uint8_t *receivedResponse, int maxLen, int *
 			// every other is Q. We just want power, so abs(I) + abs(Q) is
 			// close to what we want.
 			if(getNext) {
-				int8_t r;
-
-				if(b < 0) {
-					r = -b;
-				} else {
-					r = b;
-				}
-				if(prev < 0) {
-					r -= prev;
-				} else {
-					r += prev;
-				}
+				uint8_t r = ABS(b) + ABS(prev);
 
 				dest[c++] = (uint8_t)r;
 
@@ -367,7 +356,7 @@ static int GetIso15693AnswerFromTag(uint8_t *receivedResponse, int maxLen, int *
 			maxPos = i;
 		}
 	}
-	//	DbpString("SOF at %d, correlation %d", maxPos,max/(arraylen(FrameSOF)/skip));
+		// Dbprintf("SOF at %d, correlation %d", maxPos,max/(arraylen(FrameSOF)/skip));
 
 	int k = 0; // this will be our return value
 
@@ -396,7 +385,7 @@ static int GetIso15693AnswerFromTag(uint8_t *receivedResponse, int maxLen, int *
 			corr1 *= 4;
 	
 			if(corrEOF > corr1 && corrEOF > corr0) {
-	//			DbpString("EOF at %d", i);
+				// Dbprintf("EOF at %d", i);
 				break;
 			} else if(corr1 > corr0) {
 				i += arraylen(Logic1)/skip;
@@ -468,18 +457,7 @@ static int GetIso15693AnswerFromSniff(uint8_t *receivedResponse, int maxLen, int
 			// every other is Q. We just want power, so abs(I) + abs(Q) is
 			// close to what we want.
 			if(getNext) {
-				int8_t r;
-
-				if(b < 0) {
-					r = -b;
-				} else {
-					r = b;
-				}
-				if(prev < 0) {
-					r -= prev;
-				} else {
-					r += prev;
-				}
+				uint8_t r = ABS(b) + ABS(prev);
 
 				dest[c++] = (uint8_t)r;
 
@@ -648,18 +626,7 @@ void AcquireRawAdcSamplesIso15693(void)
 			// every other is Q. We just want power, so abs(I) + abs(Q) is
 			// close to what we want.
 			if(getNext) {
-				int8_t r;
-
-				if(b < 0) {
-					r = -b;
-				} else {
-					r = b;
-				}
-				if(prev < 0) {
-					r -= prev;
-				} else {
-					r += prev;
-				}
+				uint8_t r = ABS(b) + ABS(prev);
 
 				dest[c++] = (uint8_t)r;
 
@@ -713,18 +680,7 @@ void RecordRawAdcSamplesIso15693(void)
 			// every other is Q. We just want power, so abs(I) + abs(Q) is
 			// close to what we want.
 			if(getNext) {
-				int8_t r;
-
-				if(b < 0) {
-					r = -b;
-				} else {
-					r = b;
-				}
-				if(prev < 0) {
-					r -= prev;
-				} else {
-					r += prev;
-				}
+				uint8_t r = ABS(b) + ABS(prev);
 
 				dest[c++] = (uint8_t)r;
 
@@ -877,12 +833,12 @@ int SendDataTag(uint8_t *send, int sendlen, int init, int speed, uint8_t **recv)
 	LED_C_OFF();
 	LED_D_OFF();
 	
+	if (init) Iso15693InitReader();
+
 	int answerLen=0;
 	uint8_t *answer = BigBuf_get_addr() + 3660;
 	if (recv != NULL) memset(answer, 0, 100);
 
-	if (init) Iso15693InitReader();
-	
 	if (!speed) {
 		// low speed (1 out of 256)
 		CodeIso15693AsReader256(send, sendlen);
@@ -999,10 +955,6 @@ void ReaderIso15693(uint32_t parameter)
 	LED_C_OFF();
 	LED_D_OFF();
 
-	uint8_t *answer1 = BigBuf_get_addr() + 3660;
-	uint8_t *answer2 = BigBuf_get_addr() + 3760;
-	uint8_t *answer3 = BigBuf_get_addr() + 3860;
-
 	int answerLen1 = 0;
 	int answerLen2 = 0;
 	int answerLen3 = 0;
@@ -1013,19 +965,21 @@ void ReaderIso15693(uint32_t parameter)
 	int elapsed = 0;
 	uint8_t TagUID[8] = {0x00};
 
+	FpgaDownloadAndGo(FPGA_BITSTREAM_HF);
 
+	uint8_t *answer1 = BigBuf_get_addr() + 3660;
+	uint8_t *answer2 = BigBuf_get_addr() + 3760;
+	uint8_t *answer3 = BigBuf_get_addr() + 3860;
 	// Blank arrays
 	memset(answer1, 0x00, 300);
-
-	FpgaDownloadAndGo(FPGA_BITSTREAM_HF);
 
 	SetAdcMuxFor(GPIO_MUXSEL_HIPKD);
 	// Setup SSC
 	FpgaSetupSsc();
 
 	// Start from off (no field generated)
-    	FpgaWriteConfWord(FPGA_MAJOR_MODE_OFF);
-    	SpinDelay(200);
+   	FpgaWriteConfWord(FPGA_MAJOR_MODE_OFF);
+   	SpinDelay(200);
 
 	// Give the tags time to energize
 	FpgaWriteConfWord(FPGA_MAJOR_MODE_HF_READER_RX_XCORR);
@@ -1111,24 +1065,22 @@ void SimTagIso15693(uint32_t parameter, uint8_t *uid)
 	LED_C_OFF();
 	LED_D_OFF();
 
-	uint8_t *buf = BigBuf_get_addr() + 3660;
-	
 	int answerLen1 = 0;
 	int samples = 0;
 	int tsamples = 0;
 	int wait = 0;
 	int elapsed = 0;
 
-	memset(buf, 0x00, 100);
-
 	FpgaDownloadAndGo(FPGA_BITSTREAM_HF);
 
+	uint8_t *buf = BigBuf_get_addr() + 3660;
+	memset(buf, 0x00, 100);
+	
 	SetAdcMuxFor(GPIO_MUXSEL_HIPKD);
-
 	FpgaSetupSsc();
 
 	// Start from off (no field generated)
-    	FpgaWriteConfWord(FPGA_MAJOR_MODE_OFF);
+   	FpgaWriteConfWord(FPGA_MAJOR_MODE_OFF);
 	SpinDelay(200);
 
 	LED_A_OFF();

@@ -15,10 +15,13 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "common.h"
+#include "usb_cmd.h"
 #include "hitag2.h"
+#include "hitagS.h"
 #include "mifare.h"
 #include "../common/crc32.h"
 #include "BigBuf.h"
+#include "fpgaloader.h"
 
 extern const uint8_t OddByteParity[256];
 extern int rsamples;   // = 0;
@@ -50,60 +53,6 @@ void ListenReaderField(int limit);
 extern int ToSendMax;
 extern uint8_t ToSend[];
 
-/// fpga.h
-void FpgaSendCommand(uint16_t cmd, uint16_t v);
-void FpgaWriteConfWord(uint8_t v);
-void FpgaDownloadAndGo(int bitstream_version);
-int FpgaGatherBitstreamVersion();
-void FpgaGatherVersion(char *dst, int len);
-void FpgaSetupSsc(void);
-void SetupSpi(int mode);
-bool FpgaSetupSscDma(uint8_t *buf, int len);
-#define FpgaDisableSscDma(void)	AT91C_BASE_PDC_SSC->PDC_PTCR = AT91C_PDC_RXTDIS;
-#define FpgaEnableSscDma(void) AT91C_BASE_PDC_SSC->PDC_PTCR = AT91C_PDC_RXTEN;
-void SetAdcMuxFor(uint32_t whichGpio);
-
-// Definitions for the FPGA commands.
-#define FPGA_CMD_SET_CONFREG					(1<<12)
-#define FPGA_CMD_SET_DIVISOR					(2<<12)
-#define FPGA_CMD_SET_USER_BYTE1					(3<<12)
-// Definitions for the FPGA configuration word.
-// LF
-#define FPGA_MAJOR_MODE_LF_ADC					(0<<5)
-#define FPGA_MAJOR_MODE_LF_EDGE_DETECT			(1<<5)
-#define FPGA_MAJOR_MODE_LF_PASSTHRU				(2<<5)
-// HF
-#define FPGA_MAJOR_MODE_HF_READER_TX				(0<<5)
-#define FPGA_MAJOR_MODE_HF_READER_RX_XCORR			(1<<5)
-#define FPGA_MAJOR_MODE_HF_SIMULATOR				(2<<5)
-#define FPGA_MAJOR_MODE_HF_ISO14443A				(3<<5)
-// BOTH
-#define FPGA_MAJOR_MODE_OFF					(7<<5)
-// Options for LF_ADC
-#define FPGA_LF_ADC_READER_FIELD				(1<<0)
-// Options for LF_EDGE_DETECT
-#define FPGA_CMD_SET_EDGE_DETECT_THRESHOLD			FPGA_CMD_SET_USER_BYTE1
-#define FPGA_LF_EDGE_DETECT_READER_FIELD 			(1<<0)
-#define FPGA_LF_EDGE_DETECT_TOGGLE_MODE				(1<<1)
-// Options for the HF reader, tx to tag
-#define FPGA_HF_READER_TX_SHALLOW_MOD				(1<<0)
-// Options for the HF reader, correlating against rx from tag
-#define FPGA_HF_READER_RX_XCORR_848_KHZ				(1<<0)
-#define FPGA_HF_READER_RX_XCORR_SNOOP				(1<<1)
-#define FPGA_HF_READER_RX_XCORR_QUARTER_FREQ			(1<<2)
-// Options for the HF simulated tag, how to modulate
-#define FPGA_HF_SIMULATOR_NO_MODULATION				(0<<0)
-#define FPGA_HF_SIMULATOR_MODULATE_BPSK				(1<<0)
-#define FPGA_HF_SIMULATOR_MODULATE_212K				(2<<0)
-#define FPGA_HF_SIMULATOR_MODULATE_424K				(4<<0)
-#define FPGA_HF_SIMULATOR_MODULATE_424K_8BIT		0x5//101
-
-// Options for ISO14443A
-#define FPGA_HF_ISO14443A_SNIFFER				(0<<0)
-#define FPGA_HF_ISO14443A_TAGSIM_LISTEN				(1<<0)
-#define FPGA_HF_ISO14443A_TAGSIM_MOD				(2<<0)
-#define FPGA_HF_ISO14443A_READER_LISTEN				(3<<0)
-#define FPGA_HF_ISO14443A_READER_MOD				(4<<0)
 
 /// lfops.h
 extern uint8_t decimation;
@@ -111,79 +60,78 @@ extern uint8_t bits_per_sample ;
 extern bool averaging;
 
 void AcquireRawAdcSamples125k(int divisor);
-void ModThenAcquireRawAdcSamples125k(int delay_off,int period_0,int period_1,uint8_t *command);
+void ModThenAcquireRawAdcSamples125k(uint32_t delay_off, uint32_t period_0, uint32_t period_1, uint8_t *command);
 void ReadTItag(void);
 void WriteTItag(uint32_t idhi, uint32_t idlo, uint16_t crc);
+
 void AcquireTiType(void);
 void AcquireRawBitsTI(void);
 void SimulateTagLowFrequency(int period, int gap, int ledcontrol);
+void SimulateTagLowFrequencyBidir(int divisor, int max_bitlen);
 void CmdHIDsimTAG(int hi, int lo, int ledcontrol);
 void CmdFSKsimTAG(uint16_t arg1, uint16_t arg2, size_t size, uint8_t *BitStream);
 void CmdASKsimTag(uint16_t arg1, uint16_t arg2, size_t size, uint8_t *BitStream);
 void CmdPSKsimTag(uint16_t arg1, uint16_t arg2, size_t size, uint8_t *BitStream);
 void CmdHIDdemodFSK(int findone, int *high, int *low, int ledcontrol);
+void CmdAWIDdemodFSK(int findone, int *high, int *low, int ledcontrol); // Realtime demodulation mode for AWID26
 void CmdEM410xdemod(int findone, int *high, int *low, int ledcontrol);
 void CmdIOdemodFSK(int findone, int *high, int *low, int ledcontrol);
-void CopyIOtoT55x7(uint32_t hi, uint32_t lo, uint8_t longFMT); // Clone an ioProx card to T5557/T5567
-void SimulateTagLowFrequencyBidir(int divisor, int max_bitlen);
+void CopyIOtoT55x7(uint32_t hi, uint32_t lo); // Clone an ioProx card to T5557/T5567
 void CopyHIDtoT55x7(uint32_t hi2, uint32_t hi, uint32_t lo, uint8_t longFMT); // Clone an HID card to T5557/T5567
+void CopyVikingtoT55xx(uint32_t block1, uint32_t block2, uint8_t Q5);
 void WriteEM410x(uint32_t card, uint32_t id_hi, uint32_t id_lo);
-void CopyIndala64toT55x7(int hi, int lo); // Clone Indala 64-bit tag by UID to T55x7
-void CopyIndala224toT55x7(int uid1, int uid2, int uid3, int uid4, int uid5, int uid6, int uid7); // Clone Indala 224-bit tag by UID to T55x7
+void CopyIndala64toT55x7(uint32_t hi, uint32_t lo); // Clone Indala 64-bit tag by UID to T55x7
+void CopyIndala224toT55x7(uint32_t uid1, uint32_t uid2, uint32_t uid3, uint32_t uid4, uint32_t uid5, uint32_t uid6, uint32_t uid7); // Clone Indala 224-bit tag by UID to T55x7
+void T55xxResetRead(void);
 void T55xxWriteBlock(uint32_t Data, uint32_t Block, uint32_t Pwd, uint8_t PwdMode);
-void T55xxReadBlock(uint32_t Block, uint32_t Pwd, uint8_t PwdMode );
-void T55xxReadTrace(void);
-int DemodPCF7931(uint8_t **outBlocks);
-int IsBlock0PCF7931(uint8_t *Block);
-int IsBlock1PCF7931(uint8_t *Block);
-void ReadPCF7931();
+void T55xxReadBlock(uint16_t arg0, uint8_t Block, uint32_t Pwd);
+void T55xxWakeUp(uint32_t Pwd);
+void TurnReadLFOn();
+//void T55xxReadTrace(void);
 void EM4xReadWord(uint8_t Address, uint32_t Pwd, uint8_t PwdMode);
-void EM4xWriteWord(uint32_t Data, uint8_t Address, uint32_t Pwd, uint8_t PwdMode);
+void EM4xWriteWord(uint32_t flag, uint32_t Data, uint32_t Pwd);
+void Cotag(uint32_t arg0);
 
 /// iso14443.h
-void SimulateIso14443Tag(void);
-void AcquireRawAdcSamplesIso14443(uint32_t parameter);
-void ReadSTMemoryIso14443(uint32_t);
-void RAMFUNC SnoopIso14443(void);
+void SimulateIso14443bTag(void);
+void AcquireRawAdcSamplesIso14443b(uint32_t parameter);
+void ReadSTMemoryIso14443b(uint32_t);
+void RAMFUNC SnoopIso14443b(void);
 void SendRawCommand14443B(uint32_t, uint32_t, uint8_t, uint8_t[]);
 
-/// iso14443a.h
-void RAMFUNC SnoopIso14443a(uint8_t param);
-void SimulateIso14443aTag(int tagType, int uid_1st, int uid_2nd, byte_t* data);
-void ReaderIso14443a(UsbCommand * c);
 // Also used in iclass.c
 bool RAMFUNC LogTrace(const uint8_t *btBytes, uint16_t len, uint32_t timestamp_start, uint32_t timestamp_end, uint8_t *parity, bool readerToTag);
 void GetParity(const uint8_t *pbtCmd, uint16_t len, uint8_t *parity);
-void iso14a_set_trigger(bool enable);
 
 void RAMFUNC SniffMifare(uint8_t param);
 
 /// epa.h
 void EPA_PACE_Collect_Nonce(UsbCommand * c);
+void EPA_PACE_Replay(UsbCommand *c);
 
 // mifarecmd.h
-void ReaderMifare(bool first_try);
-int32_t dist_nt(uint32_t nt1, uint32_t nt2);
 void MifareReadBlock(uint8_t arg0, uint8_t arg1, uint8_t arg2, uint8_t *data);
-void MifareUReadBlock(uint8_t arg0,uint8_t *datain);
-void MifareUC_Auth1(uint8_t arg0, uint8_t *datain);
-void MifareUC_Auth2(uint32_t arg0, uint8_t *datain);
-void MifareUReadCard(uint8_t arg0, int Pages, uint8_t *datain);
+void MifareUReadBlock(uint8_t arg0, uint8_t arg1, uint8_t *datain);
+void MifareUC_Auth(uint8_t arg0, uint8_t *datain);
+void MifareUReadCard(uint8_t arg0, uint16_t arg1, uint8_t arg2, uint8_t *datain);
 void MifareReadSector(uint8_t arg0, uint8_t arg1, uint8_t arg2, uint8_t *datain);
 void MifareWriteBlock(uint8_t arg0, uint8_t arg1, uint8_t arg2, uint8_t *datain);
-void MifareUWriteBlock(uint8_t arg0,uint8_t *datain);
-void MifareUWriteBlock_Special(uint8_t arg0,uint8_t *datain);
+//void MifareUWriteBlockCompat(uint8_t arg0,uint8_t *datain);
+void MifareUWriteBlock(uint8_t arg0, uint8_t arg1, uint8_t *datain);
 void MifareNested(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *datain);
-void MifareChkKeys(uint8_t arg0, uint8_t arg1, uint8_t arg2, uint8_t *datain);
+void MifareAcquireEncryptedNonces(uint32_t arg0, uint32_t arg1, uint32_t flags, uint8_t *datain);
+void MifareChkKeys(uint16_t arg0, uint16_t arg1, uint8_t arg2, uint8_t *datain);
 void Mifare1ksim(uint8_t arg0, uint8_t arg1, uint8_t arg2, uint8_t *datain);
 void MifareSetDbgLvl(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *datain);
 void MifareEMemClr(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *datain);
 void MifareEMemSet(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *datain);
 void MifareEMemGet(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *datain);
 void MifareECardLoad(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *datain);
-void MifareCSetBlock(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *datain);  // Work with "magic Chinese" card
+void MifareCWipe(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *datain);       // Work with "magic Chinese" card
+void MifareCSetBlock(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *datain);  
 void MifareCGetBlock(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *datain);
 void MifareCIdent();  // is "magic chinese" card?
+void MifareUSetPwd(uint8_t arg0, uint8_t *datain);
 
 //desfire
 void Mifare_DES_Auth1(uint8_t arg0,uint8_t *datain);
@@ -201,9 +149,6 @@ void 	OnSuccess();
 void 	OnError(uint8_t reason);
 
 
-
-
-
 /// iso15693.h
 void RecordRawAdcSamplesIso15693(void);
 void AcquireRawAdcSamplesIso15693(void);
@@ -219,16 +164,32 @@ void SimulateIClass(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *datain
 void ReaderIClass(uint8_t arg0);
 void ReaderIClass_Replay(uint8_t arg0,uint8_t *MAC);
 void IClass_iso14443A_GetPublic(uint8_t arg0);
+void iClass_Authentication(uint8_t *MAC);
+void iClass_WriteBlock(uint8_t blockNo, uint8_t *data);
+void iClass_ReadBlk(uint8_t blockNo);
+bool iClass_ReadBlock(uint8_t blockNo, uint8_t *readdata);
+void iClass_Dump(uint8_t blockno, uint8_t numblks);
+void iClass_Clone(uint8_t startblock, uint8_t endblock, uint8_t *data);
+void iClass_ReadCheck(uint8_t	blockNo, uint8_t keyType);
 
 // hitag2.h
 void SnoopHitag(uint32_t type);
 void SimulateHitagTag(bool tag_mem_supplied, byte_t* data);
 void ReaderHitag(hitag_function htf, hitag_data* htd);
+void WriterHitag(hitag_function htf, hitag_data* htd, int page);
+
+//hitagS.h
+void SimulateHitagSTag(bool tag_mem_supplied, byte_t* data);
+void ReadHitagS(hitag_function htf, hitag_data* htd);
+void WritePageHitagS(hitag_function htf, hitag_data* htd,int page);
+void check_challenges(bool file_given, byte_t* data);
+
 
 // cmd.h
 bool cmd_receive(UsbCommand* cmd);
 bool cmd_send(uint32_t cmd, uint32_t arg0, uint32_t arg1, uint32_t arg2, void* data, size_t len);
 
 /// util.h
+void HfSnoop(int , int);
 
 #endif

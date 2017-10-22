@@ -114,9 +114,9 @@ uint8_t _select(bool x, bool y, uint8_t r)
 	bool r6 = r >> 1 & 0x1;
 	bool r7 = r & 0x1;
 
-	bool z0 = (r0 & r2) ^ (r1 & ~r3) ^ (r2 | r4);
+	bool z0 = (r0 & r2) ^ (r1 & !r3) ^ (r2 | r4);
 	bool z1 = (r0 | r2) ^ ( r5 | r7) ^ r1 ^ r6 ^ x ^ y;
-	bool z2 = (r3 & ~r5) ^ (r4 & r6 ) ^ r7 ^ x;
+	bool z2 = (r3 & !r5) ^ (r4 & r6 ) ^ r7 ^ x;
 
 	// The three bitz z0.. z1 are packed into a uint8_t:
 	// 00000ZZZ
@@ -224,23 +224,44 @@ void MAC(uint8_t* k, BitstreamIn input, BitstreamOut out)
 void doMAC(uint8_t *cc_nr_p, uint8_t *div_key_p, uint8_t mac[4])
 {
 	uint8_t cc_nr[13] = { 0 };
-    uint8_t div_key[8];
+	uint8_t div_key[8];
 	//cc_nr=(uint8_t*)malloc(length+1);
 
-	memcpy(cc_nr,cc_nr_p,12);
-    memcpy(div_key,div_key_p,8);
+	memcpy(cc_nr, cc_nr_p, 12);
+	memcpy(div_key, div_key_p, 8);
 
 	reverse_arraybytes(cc_nr,12);
-	BitstreamIn bitstream = {cc_nr,12 * 8,0};
-    uint8_t dest []= {0,0,0,0,0,0,0,0};
-    BitstreamOut out = { dest, sizeof(dest)*8, 0 };
-    MAC(div_key,bitstream, out);
-    //The output MAC must also be reversed
-    reverse_arraybytes(dest, sizeof(dest));
-    memcpy(mac, dest, 4);
+	BitstreamIn bitstream = {cc_nr, 12 * 8, 0};
+	uint8_t dest []= {0,0,0,0,0,0,0,0};
+	BitstreamOut out = { dest, sizeof(dest)*8, 0 };
+	MAC(div_key,bitstream, out);
+	//The output MAC must also be reversed
+	reverse_arraybytes(dest, sizeof(dest));
+	memcpy(mac, dest, 4);
 	//free(cc_nr);
-    return;
+	return;
 }
+void doMAC_N(uint8_t *address_data_p, uint8_t address_data_size, uint8_t *div_key_p, uint8_t mac[4])
+{
+	uint8_t *address_data;
+	uint8_t div_key[8];
+	address_data = (uint8_t*) malloc(address_data_size);
+
+	memcpy(address_data, address_data_p, address_data_size);
+	memcpy(div_key, div_key_p, 8);
+
+	reverse_arraybytes(address_data, address_data_size);
+	BitstreamIn bitstream = {address_data, address_data_size * 8, 0};
+	uint8_t dest []= {0,0,0,0,0,0,0,0};
+	BitstreamOut out = { dest, sizeof(dest)*8, 0 };
+	MAC(div_key, bitstream, out);
+	//The output MAC must also be reversed
+	reverse_arraybytes(dest, sizeof(dest));
+	memcpy(mac, dest, 4);
+	free(address_data);
+	return;
+}
+
 #ifndef ON_DEVICE
 int testMAC()
 {

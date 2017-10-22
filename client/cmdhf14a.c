@@ -11,9 +11,11 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <inttypes.h>
 #include <string.h>
 #include <unistd.h>
 #include "util.h"
+#include "util_posix.h"
 #include "iso14443crc.h"
 #include "data.h"
 #include "proxmark3.h"
@@ -23,6 +25,8 @@
 #include "common.h"
 #include "cmdmain.h"
 #include "mifare.h"
+#include "cmdhfmfu.h"
+#include "mifarehost.h"
 
 static int CmdHelp(const char *Cmd);
 static void waitCmd(uint8_t iLen);
@@ -140,10 +144,10 @@ int CmdHF14AReader(const char *Cmd)
 	iso14a_card_select_t card;
 	memcpy(&card, (iso14a_card_select_t *)resp.d.asBytes, sizeof(iso14a_card_select_t));
 
-	uint64_t select_status = resp.arg[0];		// 0: couldn't read, 1: OK, with ATS, 2: OK, no ATS
+	uint64_t select_status = resp.arg[0];		// 0: couldn't read, 1: OK, with ATS, 2: OK, no ATS, 3: proprietary Anticollision
 	
 	if(select_status == 0) {
-		PrintAndLog("iso14443a card select failed");
+		if (Cmd[0] != 's') PrintAndLog("iso14443a card select failed");
 		// disconnect
 		c.arg[0] = 0;
 		c.arg[1] = 0;
@@ -152,18 +156,79 @@ int CmdHF14AReader(const char *Cmd)
 		return 0;
 	}
 
-	PrintAndLog("ATQA : %02x %02x", card.atqa[1], card.atqa[0]);
-	PrintAndLog(" UID : %s", sprint_hex(card.uid, card.uidlen));
-	PrintAndLog(" SAK : %02x [%d]", card.sak, resp.arg[0]);
-
-	// Double & triple sized UID, can be mapped to a manufacturer.
-	// HACK: does this apply for Ultralight cards?
-	if ( card.uidlen > 4 ) {
-		PrintAndLog("MANUFACTURER : %s", getTagInfo(card.uid[0]));
+	if(select_status == 3) {
+		PrintAndLog("Card doesn't support standard iso14443-3 anticollision");
+		PrintAndLog("ATQA : %02x %02x", card.atqa[1], card.atqa[0]);
+		// disconnect
+		c.arg[0] = 0;
+		c.arg[1] = 0;
+		c.arg[2] = 0;
+		SendCommand(&c);
+		return 0;
 	}
 
+	PrintAndLog(" UID : %s", sprint_hex(card.uid, card.uidlen));
+	PrintAndLog("ATQA : %02x %02x", card.atqa[1], card.atqa[0]);
+	PrintAndLog(" SAK : %02x [%d]", card.sak, resp.arg[0]);
+
 	switch (card.sak) {
-		case 0x00: PrintAndLog("TYPE : NXP MIFARE Ultralight | Ultralight C"); break;
+		case 0x00: 
+
+			//***************************************test****************
+			// disconnect
+			c.arg[0] = 0;
+			c.arg[1] = 0;
+			c.arg[2] = 0;
+			SendCommand(&c);
+			
+			uint32_t tagT = GetHF14AMfU_Type();
+			ul_print_type(tagT, 0);
+
+			//reconnect for further tests
+			c.arg[0] = ISO14A_CONNECT | ISO14A_NO_DISCONNECT;
+			c.arg[1] = 0;
+			c.arg[2] = 0;
+
+			SendCommand(&c);
+
+			UsbCommand resp;
+			WaitForResponse(CMD_ACK,&resp);
+			
+			memcpy(&card, (iso14a_card_select_t *)resp.d.asBytes, sizeof(iso14a_card_select_t));
+
+			select_status = resp.arg[0];		// 0: couldn't read, 1: OK, with ATS, 2: OK, no ATS
+			
+			if(select_status == 0) {
+				//PrintAndLog("iso14443a card select failed");
+				// disconnect
+				c.arg[0] = 0;
+				c.arg[1] = 0;
+				c.arg[2] = 0;
+				SendCommand(&c);
+				return 0;
+			}
+
+			/*  orig
+			// check if the tag answers to GETVERSION (0x60)
+			c.arg[0] = ISO14A_RAW | ISO14A_APPEND_CRC | ISO14A_NO_DISCONNECT;
+			c.arg[1] = 1;
+			c.arg[2] = 0;
+			c.d.asBytes[0] = 0x60;
+			SendCommand(&c);
+			WaitForResponse(CMD_ACK,&resp);
+
+			uint8_t version[10] = {0};
+			memcpy(version, resp.d.asBytes, resp.arg[0] < sizeof(version) ? resp.arg[0] : sizeof(version));
+			uint8_t len = resp.arg[0] & 0xff;
+			switch ( len ){
+				// todo, identify "Magic UL-C tags". // they usually have a static nonce response to 0x1A command.
+				// UL-EV1, size, check version[6] == 0x0b (smaller)  0x0b * 4 == 48
+				case 0x0A:PrintAndLog("TYPE : NXP MIFARE Ultralight EV1 %d bytes", (version[6] == 0xB) ? 48 : 128);break;
+				case 0x01:PrintAndLog("TYPE : NXP MIFARE Ultralight C");break;
+				case 0x00:PrintAndLog("TYPE : NXP MIFARE Ultralight");break;	
+			}
+			*/
+			break;
 		case 0x01: PrintAndLog("TYPE : NXP TNP3xxx Activision Game Appliance"); break;
 		case 0x04: PrintAndLog("TYPE : NXP MIFARE (various !DESFire !DESFire EV1)"); break;
 		case 0x08: PrintAndLog("TYPE : NXP MIFARE CLASSIC 1k | Plus 2k SL1"); break;
@@ -180,6 +245,12 @@ int CmdHF14AReader(const char *Cmd)
 		default: ;
 	}
 
+	// Double & triple sized UID, can be mapped to a manufacturer.
+	// HACK: does this apply for Ultralight cards?
+	if ( card.uidlen > 4 ) {
+		PrintAndLog("MANUFACTURER : %s", getTagInfo(card.uid[0]));
+	}
+
 	// try to request ATS even if tag claims not to support it
 	if (select_status == 2) {
 		uint8_t rats[] = { 0xE0, 0x80 }; // FSDI=8 (FSD=256), CID=0
@@ -190,7 +261,7 @@ int CmdHF14AReader(const char *Cmd)
 		SendCommand(&c);
 		WaitForResponse(CMD_ACK,&resp);
 		
-	    memcpy(&card.ats, resp.d.asBytes, resp.arg[0]);
+	    memcpy(card.ats, resp.d.asBytes, resp.arg[0]);
 		card.ats_len = resp.arg[0];				// note: ats_len includes CRC Bytes
 	} 
 
@@ -284,16 +355,16 @@ int CmdHF14AReader(const char *Cmd)
 						PrintAndLog("                     x0 -> <1 kByte");
 						break;
 					case 0x01:
-						PrintAndLog("                     x0 -> 1 kByte");
+						PrintAndLog("                     x1 -> 1 kByte");
 						break;
 					case 0x02:
-						PrintAndLog("                     x0 -> 2 kByte");
+						PrintAndLog("                     x2 -> 2 kByte");
 						break;
 					case 0x03:
-						PrintAndLog("                     x0 -> 4 kByte");
+						PrintAndLog("                     x3 -> 4 kByte");
 						break;
 					case 0x04:
-						PrintAndLog("                     x0 -> 8 kByte");
+						PrintAndLog("                     x4 -> 8 kByte");
 						break;
 				}
 				switch (card.ats[pos + 3] & 0xf0) {
@@ -340,8 +411,13 @@ int CmdHF14AReader(const char *Cmd)
 	c.arg[2] = 0;	
 	SendCommand(&c);
 	WaitForResponse(CMD_ACK,&resp);
-	uint8_t isOK  = resp.arg[0] & 0xff;
-	PrintAndLog("Answers to chinese magic backdoor commands: %s", (isOK ? "YES" : "NO") );
+	
+	uint8_t isGeneration = resp.arg[0] & 0xff;
+	switch( isGeneration ){
+		case 1: PrintAndLog("Answers to chinese magic backdoor commands (GEN 1a): YES"); break;
+		case 2: PrintAndLog("Answers to chinese magic backdoor commands (GEN 1b): YES"); break;
+		default: PrintAndLog("Answers to chinese magic backdoor commands: NO"); break;
+	}
 	
 	// disconnect
 	c.cmd = CMD_READER_ISO_14443a;
@@ -362,11 +438,11 @@ int CmdHF14ACUIDs(const char *Cmd)
 	n = n > 0 ? n : 1;
 
 	PrintAndLog("Collecting %d UIDs", n);
-	PrintAndLog("Start: %u", time(NULL));
+	PrintAndLog("Start: %" PRIu64, msclock()/1000);
 	// repeat n times
 	for (int i = 0; i < n; i++) {
 		// execute anticollision procedure
-		UsbCommand c = {CMD_READER_ISO_14443a, {ISO14A_CONNECT, 0, 0}};
+		UsbCommand c = {CMD_READER_ISO_14443a, {ISO14A_CONNECT | ISO14A_NO_RATS, 0, 0}};
 		SendCommand(&c);
     
 		UsbCommand resp;
@@ -385,7 +461,7 @@ int CmdHF14ACUIDs(const char *Cmd)
 			PrintAndLog("%s", uid_string);
 		}
 	}
-	PrintAndLog("End: %u", time(NULL));
+	PrintAndLog("End: %" PRIu64, msclock()/1000);
 
 	return 1;
 }
@@ -422,7 +498,7 @@ int CmdHF14ASim(const char *Cmd)
 
 	// Are we handling the (optional) second part uid?
 	if (long_uid > 0xffffffff) {
-		PrintAndLog("Emulating ISO/IEC 14443 type A tag with 7 byte UID (%014"llx")",long_uid);
+		PrintAndLog("Emulating ISO/IEC 14443 type A tag with 7 byte UID (%014" PRIx64 ")",long_uid);
 		// Store the second part
 		c.arg[2] = (long_uid & 0xffffffff);
 		long_uid >>= 32;
@@ -492,148 +568,180 @@ int CmdHF14ASnoop(const char *Cmd) {
 		if (ctmp == 'r' || ctmp == 'R') param |= 0x02;
 	}
 
-  UsbCommand c = {CMD_SNOOP_ISO_14443a, {param, 0, 0}};
-  SendCommand(&c);
-  return 0;
+	UsbCommand c = {CMD_SNOOP_ISO_14443a, {param, 0, 0}};
+	SendCommand(&c);
+	return 0;
 }
 
+
 int CmdHF14ACmdRaw(const char *cmd) {
-    UsbCommand c = {CMD_READER_ISO_14443a, {0, 0, 0}};
-    uint8_t reply=1;
-    uint8_t crc=0;
-    uint8_t power=0;
-    uint8_t active=0;
-    uint8_t active_select=0;
-    uint16_t numbits=0;
-	uint32_t timeout=0;
-	uint8_t bTimeout=0;
-    char buf[5]="";
-    int i=0;
-    uint8_t data[USB_CMD_DATA_SIZE];
-	uint16_t datalen=0;
+	UsbCommand c = {CMD_READER_ISO_14443a, {0, 0, 0}};
+	bool reply=1;
+	bool crc = false;
+	bool power = false;
+	bool active = false;
+	bool active_select = false;
+	bool no_rats = false;
+	uint16_t numbits = 0;
+	bool bTimeout = false;
+	uint32_t timeout = 0;
+	bool topazmode = false;
+	char buf[5]="";
+	int i = 0;
+	uint8_t data[USB_CMD_DATA_SIZE];
+	uint16_t datalen = 0;
 	uint32_t temp;
 
-    if (strlen(cmd)<2) {
-        PrintAndLog("Usage: hf 14a raw [-r] [-c] [-p] [-f] [-b] [-t] <number of bits> <0A 0B 0C ... hex>");
-        PrintAndLog("       -r    do not read response");
-        PrintAndLog("       -c    calculate and append CRC");
-        PrintAndLog("       -p    leave the signal field ON after receive");
-        PrintAndLog("       -a    active signal field ON without select");
-        PrintAndLog("       -s    active signal field ON with select");
-        PrintAndLog("       -b    number of bits to send. Useful for send partial byte");
+	if (strlen(cmd)<2) {
+		PrintAndLog("Usage: hf 14a raw [-r] [-c] [-p] [-f] [-b] [-t] <number of bits> <0A 0B 0C ... hex>");
+		PrintAndLog("       -r    do not read response");
+		PrintAndLog("       -c    calculate and append CRC");
+		PrintAndLog("       -p    leave the signal field ON after receive");
+		PrintAndLog("       -a    active signal field ON without select");
+		PrintAndLog("       -s    active signal field ON with select");
+		PrintAndLog("       -b    number of bits to send. Useful for send partial byte");
 		PrintAndLog("       -t    timeout in ms");
-        return 0;
-    }
+		PrintAndLog("       -T    use Topaz protocol to send command");
+		PrintAndLog("       -3    ISO14443-3 select only (skip RATS)");
+		return 0;
+	}
 
-    // strip
-    while (*cmd==' ' || *cmd=='\t') cmd++;
 
-    while (cmd[i]!='\0') {
-        if (cmd[i]==' ' || cmd[i]=='\t') { i++; continue; }
-        if (cmd[i]=='-') {
-            switch (cmd[i+1]) {
-                case 'r': 
-                    reply=0;
-                    break;
-                case 'c':
-                    crc=1;
-                    break;
-                case 'p':
-                    power=1;
-                    break;
-                case 'a':
-                    active=1;
-                    break;
-                case 's':
-                    active_select=1;
-                    break;
-                case 'b': 
-                    sscanf(cmd+i+2,"%d",&temp);
-                    numbits = temp & 0xFFFF;
-                    i+=3;
-                    while(cmd[i]!=' ' && cmd[i]!='\0') { i++; }
-                    i-=2;
-                    break;
+	// strip
+	while (*cmd==' ' || *cmd=='\t') cmd++;
+
+	while (cmd[i]!='\0') {
+		if (cmd[i]==' ' || cmd[i]=='\t') { i++; continue; }
+		if (cmd[i]=='-') {
+			switch (cmd[i+1]) {
+				case 'r': 
+					reply = false;
+					break;
+				case 'c':
+					crc = true;
+					break;
+				case 'p':
+					power = true;
+					break;
+				case 'a':
+					active = true;
+					break;
+				case 's':
+					active_select = true;
+					break;
+				case 'b': 
+					sscanf(cmd+i+2,"%d",&temp);
+					numbits = temp & 0xFFFF;
+					i+=3;
+					while(cmd[i]!=' ' && cmd[i]!='\0') { i++; }
+					i-=2;
+					break;
 				case 't':
-					bTimeout=1;
+					bTimeout = true;
 					sscanf(cmd+i+2,"%d",&temp);
 					timeout = temp;
 					i+=3;
 					while(cmd[i]!=' ' && cmd[i]!='\0') { i++; }
 					i-=2;
 					break;
-                default:
-                    PrintAndLog("Invalid option");
-                    return 0;
-            }
-            i+=2;
-            continue;
-        }
-        if ((cmd[i]>='0' && cmd[i]<='9') ||
-            (cmd[i]>='a' && cmd[i]<='f') ||
-            (cmd[i]>='A' && cmd[i]<='F') ) {
-            buf[strlen(buf)+1]=0;
-            buf[strlen(buf)]=cmd[i];
-            i++;
+				case 'T':
+					topazmode = true;
+					break;
+				case '3':
+					no_rats = true;
+					break;
+				default:
+					PrintAndLog("Invalid option");
+					return 0;
+			}
+			i+=2;
+			continue;
+		}
+		if ((cmd[i]>='0' && cmd[i]<='9') ||
+		    (cmd[i]>='a' && cmd[i]<='f') ||
+		    (cmd[i]>='A' && cmd[i]<='F') ) {
+			buf[strlen(buf)+1]=0;
+			buf[strlen(buf)]=cmd[i];
+			i++;
 
-            if (strlen(buf)>=2) {
-                sscanf(buf,"%x",&temp);
-                data[datalen]=(uint8_t)(temp & 0xff);
-                *buf=0;
-				if (++datalen>sizeof(data)){
+			if (strlen(buf)>=2) {
+				sscanf(buf,"%x",&temp);
+				data[datalen]=(uint8_t)(temp & 0xff);
+				*buf=0;
+				if (datalen > sizeof(data)-1) {
 					if (crc)
 						PrintAndLog("Buffer is full, we can't add CRC to your data");
 					break;
+				} else {
+					datalen++;
 				}
-            }
-            continue;
-        }
-        PrintAndLog("Invalid char on input");
-        return 0;
-    }
-    if(crc && datalen>0 && datalen<sizeof(data)-2)
-    {
-        uint8_t first, second;
-        ComputeCrc14443(CRC_14443_A, data, datalen, &first, &second);
-        data[datalen++] = first;
-        data[datalen++] = second;
-    }
+			}
+			continue;
+		}
+		PrintAndLog("Invalid char on input");
+		return 0;
+	}
 
-    if(active || active_select)
-    {
-        c.arg[0] |= ISO14A_CONNECT;
-        if(active)
-            c.arg[0] |= ISO14A_NO_SELECT;
-    }
+	if(crc && datalen>0 && datalen<sizeof(data)-2)
+	{
+		uint8_t first, second;
+		if (topazmode) {
+			ComputeCrc14443(CRC_14443_B, data, datalen, &first, &second);
+		} else {
+			ComputeCrc14443(CRC_14443_A, data, datalen, &first, &second);
+		}
+		data[datalen++] = first;
+		data[datalen++] = second;
+	}
+
+	if(active || active_select)
+	{
+		c.arg[0] |= ISO14A_CONNECT;
+		if(active)
+			c.arg[0] |= ISO14A_NO_SELECT;
+	}
 
 	if(bTimeout){
-	    #define MAX_TIMEOUT 40542464 	// (2^32-1) * (8*16) / 13560000Hz * 1000ms/s = 
-        c.arg[0] |= ISO14A_SET_TIMEOUT;
-        if(timeout > MAX_TIMEOUT) {
-            timeout = MAX_TIMEOUT;
-            PrintAndLog("Set timeout to 40542 seconds (11.26 hours). The max we can wait for response");
-        }
+		#define MAX_TIMEOUT 40542464 	// = (2^32-1) * (8*16) / 13560000Hz * 1000ms/s
+		c.arg[0] |= ISO14A_SET_TIMEOUT;
+		if(timeout > MAX_TIMEOUT) {
+			timeout = MAX_TIMEOUT;
+			PrintAndLog("Set timeout to 40542 seconds (11.26 hours). The max we can wait for response");
+		}
 		c.arg[2] = 13560000 / 1000 / (8*16) * timeout; // timeout in ETUs (time to transfer 1 bit, approx. 9.4 us)
 	}
-    if(power)
-        c.arg[0] |= ISO14A_NO_DISCONNECT;
-    if(datalen>0)
-        c.arg[0] |= ISO14A_RAW;
 
-	// Max buffer is USB_CMD_DATA_SIZE
-    c.arg[1] = (datalen & 0xFFFF) | (numbits << 16);
-    memcpy(c.d.asBytes,data,datalen);
+	if(power) {
+		c.arg[0] |= ISO14A_NO_DISCONNECT;
+	}
 
-    SendCommand(&c);
+	if(datalen > 0) {
+		c.arg[0] |= ISO14A_RAW;
+	}
 
-    if (reply) {
-        if(active_select)
-            waitCmd(1);
-        if(datalen>0)
-            waitCmd(0);
-    } // if reply
-    return 0;
+	if(topazmode) {
+		c.arg[0] |= ISO14A_TOPAZMODE;
+	}
+
+	if(no_rats) {
+		c.arg[0] |= ISO14A_NO_RATS;
+	}
+
+	// Max buffer is USB_CMD_DATA_SIZE (512)
+	c.arg[1] = (datalen & 0xFFFF) | ((uint32_t)numbits << 16);
+	memcpy(c.d.asBytes,data,datalen);
+
+	SendCommand(&c);
+
+	if (reply) {
+		if(active_select)
+			waitCmd(1);
+		if(datalen>0)
+			waitCmd(0);
+	} // if reply
+	return 0;
 }
+
 
 static void waitCmd(uint8_t iSelect)
 {
@@ -644,7 +752,7 @@ static void waitCmd(uint8_t iSelect)
     if (WaitForResponseTimeout(CMD_ACK,&resp,1500)) {
         recv = resp.d.asBytes;
         uint8_t iLen = iSelect ? resp.arg[1] : resp.arg[0];
-        PrintAndLog("received %i octets",iLen);
+        PrintAndLog("received %i octets", iLen);
         if(!iLen)
             return;
         hexout = (char *)malloc(iLen * 3 + 1);

@@ -25,53 +25,28 @@ module hi_read_rx_xcorr(
 // Carrier is steady on through this, unless we're snooping.
 assign pwr_hi = ck_1356megb & (~snoop);
 assign pwr_oe1 = 1'b0;
-assign pwr_oe2 = 1'b0;
 assign pwr_oe3 = 1'b0;
 assign pwr_oe4 = 1'b0;
 
-reg ssp_clk;
-reg ssp_frame;
+reg [2:0] fc_div;
+always @(negedge ck_1356megb)
+    fc_div <= fc_div + 1;
 
-reg fc_div_2;
-always @(posedge ck_1356meg)
-    fc_div_2 = ~fc_div_2;
-
-reg fc_div_4;
-always @(posedge fc_div_2)
-    fc_div_4 = ~fc_div_4;
-
-reg fc_div_8;
-always @(posedge fc_div_4)
-    fc_div_8 = ~fc_div_8;
-
-reg adc_clk;
-
-always @(xcorr_is_848 or xcorr_quarter_freq or ck_1356meg)
-    if(~xcorr_quarter_freq)
-    begin
-	    if(xcorr_is_848)
-	        // The subcarrier frequency is fc/16; we will sample at fc, so that 
-	        // means the subcarrier is 1 1 1 1 1 1 1 1 0 0 0 0 0 0 0 0 1 1 ...
-	        adc_clk <= ck_1356meg;
-	    else
-	        // The subcarrier frequency is fc/32; we will sample at fc/2, and
-	        // the subcarrier will look identical.
-	        adc_clk <= fc_div_2;
-    end
-    else
-    begin
-	    if(xcorr_is_848)
-	        // The subcarrier frequency is fc/64
-	        adc_clk <= fc_div_4;
-	    else
-	        // The subcarrier frequency is fc/128
-	        adc_clk <= fc_div_8;
-	end
-
+(* clock_signal = "yes" *) reg adc_clk;				// sample frequency, always 16 * fc
+always @(ck_1356megb, xcorr_is_848, xcorr_quarter_freq, fc_div)
+	if (xcorr_is_848 & ~xcorr_quarter_freq)			// fc = 847.5 kHz
+		adc_clk <= ck_1356megb;
+	else if (~xcorr_is_848 & ~xcorr_quarter_freq)	// fc = 424.25 kHz 
+		adc_clk <= fc_div[0];
+	else if (xcorr_is_848 & xcorr_quarter_freq)		// fc = 212.125 kHz
+		adc_clk <= fc_div[1];
+	else 											// fc = 106.0625 kHz
+		adc_clk <= fc_div[2];
+		
 // When we're a reader, we just need to do the BPSK demod; but when we're an
 // eavesdropper, we also need to pick out the commands sent by the reader,
 // using AM. Do this the same way that we do it for the simulated tag.
-reg after_hysteresis, after_hysteresis_prev;
+reg after_hysteresis, after_hysteresis_prev, after_hysteresis_prev_prev;
 reg [11:0] has_been_low_for;
 always @(negedge adc_clk)
 begin
@@ -97,12 +72,22 @@ end
 // Let us report a correlation every 4 subcarrier cycles, or 4*16 samples,
 // so we need a 6-bit counter.
 reg [5:0] corr_i_cnt;
-reg [5:0] corr_q_cnt;
 // And a couple of registers in which to accumulate the correlations.
-reg signed [15:0] corr_i_accum;
-reg signed [15:0] corr_q_accum;
+// we would add/sub at most 32 times adc_d, the signed result can be held in 14 bits. 
+reg signed [13:0] corr_i_accum;
+reg signed [13:0] corr_q_accum;
 reg signed [7:0] corr_i_out;
 reg signed [7:0] corr_q_out;
+// clock and frame signal for communication to ARM
+reg ssp_clk;
+reg ssp_frame;
+
+
+always @(negedge adc_clk)
+begin
+	corr_i_cnt <= corr_i_cnt + 1;
+end		
+		
 
 // ADC data appears on the rising edge, so sample it on the falling edge
 always @(negedge adc_clk)
@@ -110,24 +95,24 @@ begin
     // These are the correlators: we correlate against in-phase and quadrature
     // versions of our reference signal, and keep the (signed) result to
     // send out later over the SSP.
-    if(corr_i_cnt == 7'd63)
+    if(corr_i_cnt == 6'd0)
     begin
         if(snoop)
         begin
-            corr_i_out <= {corr_i_accum[12:6], after_hysteresis_prev};
-            corr_q_out <= {corr_q_accum[12:6], after_hysteresis};
+			// Send only 7 most significant bits of tag signal (signed), LSB is reader signal:
+            corr_i_out <= {corr_i_accum[13:7], after_hysteresis_prev_prev};
+            corr_q_out <= {corr_q_accum[13:7], after_hysteresis_prev};
+			after_hysteresis_prev_prev <= after_hysteresis;
         end
         else
         begin
-            // Only correlations need to be delivered.
+            // 8 most significant bits of tag signal
             corr_i_out <= corr_i_accum[13:6];
             corr_q_out <= corr_q_accum[13:6];
         end
 
         corr_i_accum <= adc_d;
         corr_q_accum <= adc_d;
-        corr_q_cnt <= 4;
-        corr_i_cnt <= 0;
     end
     else
     begin
@@ -136,18 +121,16 @@ begin
         else
             corr_i_accum <= corr_i_accum + adc_d;
 
-        if(corr_q_cnt[3])
-            corr_q_accum <= corr_q_accum - adc_d;
-        else
+        if(corr_i_cnt[3] == corr_i_cnt[2])			// phase shifted by pi/2
             corr_q_accum <= corr_q_accum + adc_d;
+        else
+            corr_q_accum <= corr_q_accum - adc_d;
 
-        corr_i_cnt <= corr_i_cnt + 1;
-        corr_q_cnt <= corr_q_cnt + 1;
     end
 
     // The logic in hi_simulate.v reports 4 samples per bit. We report two
     // (I, Q) pairs per bit, so we should do 2 samples per pair.
-    if(corr_i_cnt == 6'd31)
+    if(corr_i_cnt == 6'd32)
         after_hysteresis_prev <= after_hysteresis;
 
     // Then the result from last time is serialized and send out to the ARM.
@@ -161,14 +144,16 @@ begin
     begin
         ssp_clk <= 1'b1;
         // Don't shift if we just loaded new data, obviously.
-        if(corr_i_cnt != 7'd0)
+        if(corr_i_cnt != 6'd0)
         begin
             corr_i_out[7:0] <= {corr_i_out[6:0], corr_q_out[7]};
             corr_q_out[7:1] <= corr_q_out[6:0];
         end
     end
 
-    if(corr_i_cnt[5:2] == 4'b000 || corr_i_cnt[5:2] == 4'b1000)
+	// set ssp_frame signal for corr_i_cnt = 0..3 and corr_i_cnt = 32..35
+	// (send two frames with 8 Bits each)
+    if(corr_i_cnt[5:2] == 4'b0000 || corr_i_cnt[5:2] == 4'b1000)
         ssp_frame = 1'b1;
     else
         ssp_frame = 1'b0;
@@ -181,5 +166,6 @@ assign dbg = corr_i_cnt[3];
 
 // Unused.
 assign pwr_lo = 1'b0;
+assign pwr_oe2 = 1'b0;
 
 endmodule
